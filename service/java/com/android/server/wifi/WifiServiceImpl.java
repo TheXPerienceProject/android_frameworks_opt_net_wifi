@@ -478,7 +478,7 @@ public class WifiServiceImpl extends BaseWifiService {
             String action = intent.getAction();
             if (WifiManager.SUPPLICANT_STATE_CHANGED_ACTION.equals(action)) {
                 SupplicantState state = (SupplicantState) intent.getParcelableExtra(WifiManager.EXTRA_NEW_STATE);
-                if (isCurrentStaShareThisAp() && state == SupplicantState.COMPLETED) {
+                if (isCurrentStaShareThisAp() && state == SupplicantState.COMPLETED && !mSoftApExtendingWifi) {
                     restartSoftApIfNeeded();
                 } else if (mSoftApExtendingWifi && state == SupplicantState.DISCONNECTED) {
                     restartSoftApIfNeeded();
@@ -1131,15 +1131,15 @@ public class WifiServiceImpl extends BaseWifiService {
         mLog.trace("startSoftApInternal uid=% mode=%")
                 .c(Binder.getCallingUid()).c(mode).flush();
 
-        if (wifiConfig == null && mSettingsStore.isAirplaneModeOn()) {
-            Log.d(TAG, "Starting softap in airplane mode. Fallback to 2G band");
+        if (wifiConfig == null && TextUtils.isEmpty(mCountryCode.getCountryCode())) {
+            Log.d(TAG, "Starting softap without country code. Fallback to 2G band");
             wifiConfig = new WifiConfiguration(mWifiApConfigStore.getApConfiguration());
             wifiConfig.apBand = WifiConfiguration.AP_BAND_2GHZ;
         }
 
         setDualSapMode(wifiConfig);
 
-        mSoftApExtendingWifi = isCurrentStaShareThisAp();
+        mSoftApExtendingWifi = (!mWifiApConfigStore.getDualSapStatus()) && isCurrentStaShareThisAp();
         if (mSoftApExtendingWifi) {
             startSoftApInRepeaterMode(mode, wifiConfig);
             return true;
