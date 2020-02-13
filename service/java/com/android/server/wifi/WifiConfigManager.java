@@ -271,6 +271,7 @@ public class WifiConfigManager {
     private final WifiPermissionsUtil mWifiPermissionsUtil;
     private final WifiPermissionsWrapper mWifiPermissionsWrapper;
     private final WifiInjector mWifiInjector;
+    private boolean mConnectedMacRandomzationSupported;
 
     /**
      * Local log used for debugging any WifiConfigManager issues.
@@ -440,6 +441,8 @@ public class WifiConfigManager {
                     }
                 });
         updatePnoRecencySortingSetting();
+        mConnectedMacRandomzationSupported = mContext.getResources()
+                .getBoolean(R.bool.config_wifi_connected_mac_randomization_supported);
         try {
             mSystemUiUid = mContext.getPackageManager().getPackageUidAsUser(SYSUI_PACKAGE_NAME,
                     PackageManager.MATCH_SYSTEM_ONLY, UserHandle.USER_SYSTEM);
@@ -489,6 +492,14 @@ public class WifiConfigManager {
                 mContext, Settings.Global.WIFI_PNO_RECENCY_SORTING_ENABLED,
                 WIFI_PNO_RECENCY_SORTING_ENABLED_DEFAULT);
         mPnoRecencySortingEnabled = (flag == 1);
+    }
+
+    public boolean isWhitelistNetworkRoamingFeatureEnabled() {
+        return mFrameworkFacade.getIntegerSetting(mContext, Settings.Global.WIFI_WHIELIST_ROAMING_FEATURE_ENABLED, 0) > 0 ;
+    }
+
+    public boolean isUnsavedNetworkLinkingFeatureEnabled() {
+        return mFrameworkFacade.getIntegerSetting(mContext, Settings.Global.WIFI_UNSAVED_NETWORK_LINKING_FEATURE_ENABLED, 0) > 0 ;
     }
 
     /**
@@ -543,6 +554,9 @@ public class WifiConfigManager {
         if (targetUid != Process.WIFI_UID && targetUid != Process.SYSTEM_UID
                 && targetUid != configuration.creatorUid) {
             maskRandomizedMacAddressInWifiConfiguration(network);
+        }
+        if (!mConnectedMacRandomzationSupported) {
+            network.macRandomizationSetting = WifiConfiguration.RANDOMIZATION_NONE;
         }
         return network;
     }
@@ -2219,9 +2233,13 @@ public class WifiConfigManager {
         // Add the scan detail to this network's scan detail cache.
         scanDetailCache.put(scanDetail);
 
-        // Since we added a scan result to this configuration, re-attempt linking.
-        // TODO: Do we really need to do this after every scan result?
-        attemptNetworkLinking(config);
+        // Disable linking networks here when whitelist roaming feature enabled to make
+        // sure whitelist networks will be configured only when STA is in connected state.
+        if (!isWhitelistNetworkRoamingFeatureEnabled()) {
+            // Since we added a scan result to this configuration, re-attempt linking.
+            // TODO: Do we really need to do this after every scan result?
+            attemptNetworkLinking(config);
+        }
     }
 
     /**
@@ -2394,7 +2412,9 @@ public class WifiConfigManager {
                 }
                 return true;
             }
-        } else {
+        } else if (!isWhitelistNetworkRoamingFeatureEnabled()) {
+            // Don't link based BSSID partial match when whitelist roaming feature enabled
+            // to make sure networks with different default gateways won't be linked.
             // We do not know BOTH default gateways hence we will try to link
             // hoping that WifiConfigurations are indeed behind the same gateway.
             // once both WifiConfiguration have been tried and thus once both default gateways
@@ -2491,6 +2511,9 @@ public class WifiConfigManager {
                 continue;
             }
             if (linkConfig.ephemeral) {
+                continue;
+            }
+            if (!linkConfig.getNetworkSelectionStatus().isNetworkEnabled()) {
                 continue;
             }
             // Network Selector will be allowed to dynamically jump from a linked configuration
@@ -2729,7 +2752,7 @@ public class WifiConfigManager {
     }
 
     /**
-     * Retrieves a list of all the saved hidden networks for scans.
+     * Retrieves a list of all the saved hidden networks for scans
      *
      * Hidden network list sent to the firmware has limited size. If there are a lot of saved
      * networks, this list will be truncated and we might end up not sending the networks
@@ -2742,19 +2765,12 @@ public class WifiConfigManager {
     public List<WifiScanner.ScanSettings.HiddenNetwork> retrieveHiddenNetworkList() {
         List<WifiScanner.ScanSettings.HiddenNetwork> hiddenList = new ArrayList<>();
         List<WifiConfiguration> networks = new ArrayList<>(getInternalConfiguredNetworks());
-        // Remove any permanently disabled networks or non hidden networks.
-        Iterator<WifiConfiguration> iter = networks.iterator();
-        while (iter.hasNext()) {
-            WifiConfiguration config = iter.next();
-            if (!config.hiddenSSID) {
-                iter.remove();
-            }
-        }
-        Collections.sort(networks, sScanListComparator);
+        // Remove any non hidden networks.
+        networks.removeIf(config -> !config.hiddenSSID);
+        networks.sort(sScanListComparator);
         // The most frequently connected network has the highest priority now.
         for (WifiConfiguration config : networks) {
-            hiddenList.add(
-                    new WifiScanner.ScanSettings.HiddenNetwork(config.SSID));
+            hiddenList.add(new WifiScanner.ScanSettings.HiddenNetwork(config.SSID));
         }
         return hiddenList;
     }
@@ -3140,7 +3156,7 @@ public class WifiConfigManager {
         if (mDeferredUserUnlockRead) {
             Log.i(TAG, "Handling user unlock before loading from store.");
             List<WifiConfigStore.StoreFile> userStoreFiles =
-                    WifiConfigStore.createUserFiles(mCurrentUserId, UserManager.get(mContext));
+                    WifiConfigStore.createUserFiles(mCurrentUserId);
             if (userStoreFiles == null) {
                 Log.wtf(TAG, "Failed to create user store files");
                 return false;
@@ -3150,7 +3166,7 @@ public class WifiConfigManager {
         }
         try {
             mWifiConfigStore.read();
-        } catch (IOException e) {
+        } catch (IOException | IllegalStateException e) {
             Log.wtf(TAG, "Reading from new store failed. All saved networks are lost!", e);
             return false;
         } catch (XmlPullParserException e) {
@@ -3179,13 +3195,13 @@ public class WifiConfigManager {
     private boolean loadFromUserStoreAfterUnlockOrSwitch(int userId) {
         try {
             List<WifiConfigStore.StoreFile> userStoreFiles =
-                    WifiConfigStore.createUserFiles(userId, UserManager.get(mContext));
+                    WifiConfigStore.createUserFiles(userId);
             if (userStoreFiles == null) {
                 Log.e(TAG, "Failed to create user store files");
                 return false;
             }
             mWifiConfigStore.switchUserStoresAndRead(userStoreFiles);
-        } catch (IOException e) {
+        } catch (IOException | IllegalStateException e) {
             Log.wtf(TAG, "Reading from new store failed. All saved private networks are lost!", e);
             return false;
         } catch (XmlPullParserException e) {
@@ -3260,7 +3276,7 @@ public class WifiConfigManager {
 
         try {
             mWifiConfigStore.write(forceWrite);
-        } catch (IOException e) {
+        } catch (IOException | IllegalStateException e) {
             Log.wtf(TAG, "Writing to store failed. Saved networks maybe lost!", e);
             return false;
         } catch (XmlPullParserException e) {
@@ -3486,5 +3502,43 @@ public class WifiConfigManager {
             return;
         }
         config.lastWpa2FallbackAttemptTime = mClock.getWallClockMillis();
+    }
+
+    /**
+     * Retrieves the configured network corresponding to the provided configKey
+     * without any masking.
+     *
+     * WARNING: Don't use this to pass network configurations except in the wifi stack, when
+     * there is a need for passwords and randomized MAC address.
+     *
+     * @param configKey configKey of the requested network.
+     * @return Copy of WifiConfiguration object if found, null otherwise.
+     */
+    public WifiConfiguration getConfiguredNetworkWithoutMasking(String configKey) {
+        WifiConfiguration config = getInternalConfiguredNetwork(configKey);
+        if (config == null) {
+            return null;
+        }
+        return new WifiConfiguration(config);
+    }
+
+    /**
+     * This method runs through all the saved networks and checks if the provided network can be
+     * linked with any of them.
+     *
+     * @param networkId networkId corresponding to the network that needs to be
+     *               checked for potential links.
+     */
+    public void attemptNetworkLinking(int networkId) {
+        if (networkId == WifiConfiguration.INVALID_NETWORK_ID) {
+            return;
+        }
+        WifiConfiguration internalConfig = mConfiguredNetworks.getForCurrentUser(networkId);
+        if (internalConfig == null) {
+            Log.e(TAG, "Cannot find network with networkId " + networkId);
+            return;
+        }
+        internalConfig.linkedConfigurations = null;
+        attemptNetworkLinking(internalConfig);
     }
 }
