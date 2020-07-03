@@ -250,7 +250,7 @@ public class WifiInjector {
         mWifiKeyStore = new WifiKeyStore(mKeyStore);
         mWifiConfigStore = new WifiConfigStore(
                 mContext, clientModeImplLooper, mClock, mWifiMetrics,
-                mFrameworkFacade.isNiapModeOn(mContext),WifiManager.STA_PRIMARY);
+                WifiConfigStore.createSharedFile(mFrameworkFacade.isNiapModeOn(mContext)));
         SubscriptionManager subscriptionManager =
                 mContext.getSystemService(SubscriptionManager.class);
         // Config Manager
@@ -801,21 +801,6 @@ public class WifiInjector {
     }
 
     /**
-     * Create QtiWifiConfigManager
-     * @param id interface id.
-     */
-    private WifiConfigManager makeQtiWifiConfigManager(int id) {
-        WifiConfigStore mQtiWifiConfigStore = new WifiConfigStore(mContext, mWifiCoreHandlerThread.getLooper(), mClock, mWifiMetrics,mFrameworkFacade.isNiapModeOn(mContext),id);
-        return new WifiConfigManager(mContext, mClock,UserManager.get(mContext), makeTelephonyManager(),
-                 mWifiKeyStore, mQtiWifiConfigStore, mWifiPermissionsUtil,
-                 mWifiPermissionsWrapper, this, new NetworkListSharedStoreData(mContext),
-                 new NetworkListUserStoreData(mContext),
-                 new DeletedEphemeralSsidsStoreData(mClock), new RandomizedMacStoreData(),
-                 mFrameworkFacade, mWifiCoreHandlerThread.getLooper(),mDeviceConfigFacade);
-    }
-
-
-    /**
      * Create a QtiClientModeManager
      *
      * @param id interface id for  QtiClientModeManager
@@ -824,7 +809,7 @@ public class WifiInjector {
      */
     public QtiClientModeManager makeQtiClientModeManager(int id, QtiClientModeManager.Listener listener) {
         return new QtiClientModeManager(mContext, mWifiCoreHandlerThread.getLooper(),
-                mWifiNative, listener, this, id, makeQtiWifiConfigManager(id));
+                mWifiNative, listener, this, id);
     }
 
     /**
@@ -834,10 +819,10 @@ public class WifiInjector {
      * @param identity staId.
      * @param listener listener for QtiClientModeManager state changes
      */
-    public QtiClientModeImpl makeQtiClientModeImpl(int id, QtiClientModeManager.Listener listener, WifiConfigManager mQtiWifiConfigManager ) {
+    public QtiClientModeImpl makeQtiClientModeImpl(int id, QtiClientModeManager.Listener listener) {
         return new QtiClientModeImpl(mContext, mFrameworkFacade, mWifiCoreHandlerThread.getLooper(),
                        this, mWifiNative, new WrongPasswordNotifier(mContext, mFrameworkFacade),
-                       mWifiTrafficPoller, mLinkProbeManager, id, listener, mQtiWifiConfigManager);
+                       mWifiTrafficPoller, mLinkProbeManager, id, listener);
     }
 
     /**
@@ -847,22 +832,24 @@ public class WifiInjector {
      * @param identity staId.
      * @param qtiClientModeImpl Instance of client mode impl.
      */
-    public QtiWifiConnectivityManager makeQtiWifiConnectivityManager(int id, QtiClientModeImpl qtiClientModeImpl, WifiConfigManager mQtiWifiConfigManager) {
+    public QtiWifiConnectivityManager makeQtiWifiConnectivityManager(int id, QtiClientModeImpl qtiClientModeImpl) {
         WifiConnectivityHelper mQtiWifiConnectivityHelper = new WifiConnectivityHelper(mWifiNative);
 
         WifiNetworkSelector mQtiWifiNetworkSelector = new WifiNetworkSelector(mContext, mWifiScoreCard,
-                                   mScoringParams, mQtiWifiConfigManager, mClock, mConnectivityLocalLog,
+                                   mScoringParams, mWifiConfigManager, mClock, mConnectivityLocalLog,
                                    mWifiMetrics, mWifiNative);
         SavedNetworkEvaluator mQtiSavedNetworkEvaluator = new SavedNetworkEvaluator(mContext, mScoringParams,
-                                   mQtiWifiConfigManager, mClock, mConnectivityLocalLog, mQtiWifiConnectivityHelper,
+                                   mWifiConfigManager, mClock, mConnectivityLocalLog, mQtiWifiConnectivityHelper,
                                    mContext.getSystemService(SubscriptionManager.class));
         // Register the saved network evaluator with the network selector.
         mQtiWifiNetworkSelector.registerNetworkEvaluator(mQtiSavedNetworkEvaluator);
         // TODO: UT: check if we need to add PasspointNetworkEvaluator.
 
+        mQtiWifiNetworkSelector.setStaId(id);
+        mQtiSavedNetworkEvaluator.setStaId(id);
 
         return new QtiWifiConnectivityManager(mContext, getScoringParams(),
-                qtiClientModeImpl, this, mQtiWifiConfigManager, mQtiWifiNetworkSelector,
+                qtiClientModeImpl, this, mWifiConfigManager, mQtiWifiNetworkSelector,
                 mQtiWifiConnectivityHelper, mWifiCoreHandlerThread.getLooper(),
                 mClock, mConnectivityLocalLog, id);
     }

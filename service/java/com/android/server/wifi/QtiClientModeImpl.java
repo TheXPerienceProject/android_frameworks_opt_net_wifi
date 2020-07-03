@@ -724,7 +724,7 @@ public class QtiClientModeImpl extends StateMachine {
                             WrongPasswordNotifier wrongPasswordNotifier,
                             WifiTrafficPoller wifiTrafficPoller,
                             LinkProbeManager linkProbeManager, int identity,
-                            QtiClientModeManager.Listener listener, WifiConfigManager wifiConfigManager) {
+                            QtiClientModeManager.Listener listener) {
         super(TAG, looper);
         mWifiInjector = wifiInjector;
         mWifiMetrics = mWifiInjector.getWifiMetrics();
@@ -750,7 +750,7 @@ public class QtiClientModeImpl extends StateMachine {
                 PackageManager.FEATURE_WIFI_DIRECT);
 
         mWifiPermissionsUtil = mWifiInjector.getWifiPermissionsUtil();
-        mWifiConfigManager = wifiConfigManager;
+        mWifiConfigManager = mWifiInjector.getWifiConfigManager();
 
         mPasspointManager = mWifiInjector.getPasspointManager();
 
@@ -762,7 +762,7 @@ public class QtiClientModeImpl extends StateMachine {
         mSupplicantStateTracker =
                 mFacade.makeSupplicantStateTracker(context, mWifiConfigManager, getHandler());
 
-        mQtiWifiConnectivityManager = mWifiInjector.makeQtiWifiConnectivityManager(mIdentity, this, mWifiConfigManager);
+        mQtiWifiConnectivityManager = mWifiInjector.makeQtiWifiConnectivityManager(mIdentity, this);
 
 
         mLinkProperties = new LinkProperties();
@@ -856,7 +856,7 @@ public class QtiClientModeImpl extends StateMachine {
     @Override
     public void start() {
         super.start();
-        mWifiConfigManager.loadFromStore();
+
         PowerManager powerManager = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
 
         // Learn the initial state of whether the screen is on.
@@ -1058,7 +1058,7 @@ public class QtiClientModeImpl extends StateMachine {
             loge("connectToUserSelectNetwork Invalid network Id=" + netId);
             return false;
         }
-        if (!mWifiConfigManager.enableNetwork(netId, true, uid)
+        if (!mWifiConfigManager.qtiEnableNetwork(netId, true, uid, mIdentity)
                 || !mWifiConfigManager.updateLastConnectUid(netId, uid)) {
             logi("connectToUserSelectNetwork Allowing uid " + uid
                     + " with insufficient permissions to connect=" + netId);
@@ -2002,7 +2002,7 @@ public class QtiClientModeImpl extends StateMachine {
                 if (config != null) {
                     sb.append(" ").append(config.configKey());
                 }
-                key = mWifiConfigManager.getLastSelectedNetworkConfigKey();
+                key = mWifiConfigManager.qtiGetLastSelectedNetworkConfigKey(mIdentity);
                 if (key != null) {
                     sb.append(" last=").append(key);
                 }
@@ -2140,7 +2140,7 @@ public class QtiClientModeImpl extends StateMachine {
                 sb.append(Integer.toString(msg.arg1));
                 sb.append(" ");
                 sb.append(Integer.toString(msg.arg2));
-                key = mWifiConfigManager.getLastSelectedNetworkConfigKey();
+                key = mWifiConfigManager.qtiGetLastSelectedNetworkConfigKey(mIdentity);
                 if (key != null) {
                     sb.append(" last=").append(key);
                 }
@@ -2154,7 +2154,7 @@ public class QtiClientModeImpl extends StateMachine {
                 sb.append(Integer.toString(msg.arg1));
                 sb.append(" ");
                 sb.append(Integer.toString(msg.arg2));
-                sb.append(" num=").append(mWifiConfigManager.getConfiguredNetworks().size());
+                sb.append(" num=").append(mWifiConfigManager.qtiGetConfiguredNetworks(mIdentity).size());
                 break;
             case CMD_PRE_DHCP_ACTION:
                 sb.append(" ");
@@ -3102,6 +3102,18 @@ public class QtiClientModeImpl extends StateMachine {
             MacAddress newMac = config.getOrCreateRandomizedMacAddress();
             mWifiConfigManager.setNetworkRandomizedMacAddress(config.networkId, newMac);
 
+            /* Dual STA can't use same MAC for both interface in following instances:
+        .    *  - When connecting to SHARED profile.
+             *  - When other interface is already using this MAC.
+             *
+             * Generate a temporary Mac for this connection.
+             */
+            if ((config.staId == WifiManager.STA_SHARED)
+                  || mWifiNative.isMacAddressAlreadyInUse(mInterfaceName, newMac)) {
+                Log.d(TAG, newMac.toString() + " is not allowed for this interface. Generating temporary Mac");
+                newMac = MacAddress.createRandomUnicastAddress();
+            }
+
             if (!WifiConfiguration.isValidMacAddressForRandomization(newMac)) {
                 Log.wtf(TAG, "Config generated an invalid MAC address");
             } else if (currentMac.equals(newMac)) {
@@ -3188,8 +3200,8 @@ public class QtiClientModeImpl extends StateMachine {
                 case CMD_ENABLE_NETWORK:
                     boolean disableOthers = message.arg2 == 1;
                     int netId = message.arg1;
-                    boolean ok = mWifiConfigManager.enableNetwork(
-                            netId, disableOthers, message.sendingUid);
+                    boolean ok = mWifiConfigManager.qtiEnableNetwork(
+                            netId, disableOthers, message.sendingUid, mIdentity);
                     if (!ok) {
                         mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
                     }
@@ -3214,11 +3226,11 @@ public class QtiClientModeImpl extends StateMachine {
                     break;
                 case CMD_GET_CONFIGURED_NETWORKS:
                     replyToMessage(message, message.what,
-                            mWifiConfigManager.getSavedNetworks(message.arg2));
+                            mWifiConfigManager.qtiGetSavedNetworks(message.arg2, mIdentity));
                     break;
                 case CMD_GET_PRIVILEGED_CONFIGURED_NETWORKS:
                     replyToMessage(message, message.what,
-                            mWifiConfigManager.getConfiguredNetworksWithPasswords());
+                            mWifiConfigManager.qtiGetConfiguredNetworksWithPasswords(mIdentity));
                     break;
                 case CMD_ENABLE_RSSI_POLL:
                     mEnableRssiPolling = (message.arg1 == 1);
@@ -3773,7 +3785,7 @@ public class QtiClientModeImpl extends StateMachine {
                         // attempt.
                         ok = connectToUserSelectNetwork(netId, message.sendingUid, false);
                     } else {
-                        ok = mWifiConfigManager.enableNetwork(netId, false, message.sendingUid);
+                        ok = mWifiConfigManager.qtiEnableNetwork(netId, false, message.sendingUid, mIdentity);
                     }
                     if (!ok) {
                         mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
@@ -4999,8 +5011,8 @@ public class QtiClientModeImpl extends StateMachine {
             return false;
         }
         long currentTimeMillis = mClock.getElapsedSinceBootMillis();
-        return (mWifiConfigManager.getLastSelectedNetwork() == currentConfig.networkId
-                && currentTimeMillis - mWifiConfigManager.getLastSelectedTimeStamp()
+        return (mWifiConfigManager.qtiGetLastSelectedNetwork(mIdentity) == currentConfig.networkId
+                && currentTimeMillis - mWifiConfigManager.qtiGetLastSelectedTimeStamp(mIdentity)
                 < LAST_SELECTED_NETWORK_EXPIRATION_AGE_MILLIS);
     }
 
@@ -5232,7 +5244,7 @@ public class QtiClientModeImpl extends StateMachine {
                                         config.networkId);
                                 // If this was not the last selected network, update network
                                 // selection status to temporarily disable the network.
-                                if (mWifiConfigManager.getLastSelectedNetwork() != config.networkId
+                                if (mWifiConfigManager.qtiGetLastSelectedNetwork(mIdentity) != config.networkId
                                         && !config.noInternetAccessExpected) {
                                     Log.i(TAG, "Temporarily disabling network because of"
                                             + "no-internet access");
@@ -5651,7 +5663,8 @@ public class QtiClientModeImpl extends StateMachine {
         if (config == null)
             return false;
 
-        if (config.staId != mIdentity)
+        if (config.staId != WifiManager.STA_SHARED
+                && config.staId != mIdentity)
             return false;
 
         return true;
@@ -5728,8 +5741,8 @@ public class QtiClientModeImpl extends StateMachine {
             replyToMessage(message, WifiManager.SAVE_NETWORK_FAILED, WifiManager.ERROR);
             return result;
         }
-        if (!mWifiConfigManager.enableNetwork(
-                result.getNetworkId(), false, message.sendingUid)) {
+        if (!mWifiConfigManager.qtiEnableNetwork(
+                result.getNetworkId(), false, message.sendingUid, mIdentity)) {
             loge("SAVE_NETWORK enabling config=" + config + " failed");
             mMessageHandlingStatus = MESSAGE_HANDLING_STATUS_FAIL;
             replyToMessage(message, WifiManager.SAVE_NETWORK_FAILED, WifiManager.ERROR);
@@ -5898,11 +5911,6 @@ public class QtiClientModeImpl extends StateMachine {
         int result = resultMsg.arg1;
         resultMsg.recycle();
         return result;
-    }
-
-    public WifiConfiguration getConfiguredNetwork(int netId)
-    {
-        return mWifiConfigManager.getConfiguredNetwork(netId);
     }
 
 }

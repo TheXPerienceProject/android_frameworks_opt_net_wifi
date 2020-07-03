@@ -77,13 +77,13 @@ public class QtiClientModeManager implements ActiveModeManager {
     AsyncChannel mQtiClientModeImplChannel;
 
     QtiClientModeManager(Context context, @NonNull Looper looper, WifiNative wifiNative,
-            Listener listener, WifiInjector wifiInjector, int staId, WifiConfigManager wifiConfigManager) {
+            Listener listener, WifiInjector wifiInjector, int staId) {
         mContext = context;
         mWifiNative = wifiNative;
         mListener = listener;
         mWifiInjector = wifiInjector;
         mStaId = staId;
-        mQtiClientModeImpl = wifiInjector.makeQtiClientModeImpl(staId, mListener, wifiConfigManager);
+        mQtiClientModeImpl = wifiInjector.makeQtiClientModeImpl(staId, mListener);
         mStateMachine = new ClientModeStateMachine(looper);
         mQtiClientModeImplHandler = new QtiClientModeImplHandler(TAG, looper, new WifiAsyncChannel(TAG));
     }
